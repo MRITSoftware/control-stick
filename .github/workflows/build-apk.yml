@@ -86,7 +86,9 @@ jobs:
           gradle --version
           
           # Volta para o diretório do projeto e gera o wrapper
-          cd "${{ env.WORKING_DIR }}"
+          # Usa a variável de ambiente do shell, não a sintaxe do GitHub Actions
+          cd "$GITHUB_WORKSPACE/$WORKING_DIR"
+          echo "Diretório atual: $(pwd)"
           echo "Gerando wrapper com Gradle $GRADLE_VERSION..."
           gradle wrapper --gradle-version=$GRADLE_VERSION --no-daemon
           
