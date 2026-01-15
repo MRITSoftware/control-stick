@@ -88,16 +88,31 @@ jobs:
     - name: Find gradlew and set working directory
       id: find_gradlew
       run: |
-        if [ -f "gradlew" ]; then
-          echo "WORKING_DIR=." >> $GITHUB_ENV
-        elif [ -f "MRIT Control/MRIT Control/gradlew" ]; then
-          echo "WORKING_DIR=MRIT Control/MRIT Control" >> $GITHUB_ENV
+        echo "🔍 Procurando gradlew..."
+        echo "Estrutura do diretório:"
+        ls -la | head -20
+        
+        # Procura gradlew em vários locais possíveis
+        GRADLEW_PATH=$(find . -name "gradlew" -type f -not -path "./.git/*" -not -path "./.gradle/*" | head -1)
+        
+        if [ -n "$GRADLEW_PATH" ]; then
+          # Remove ./ do início do caminho
+          GRADLEW_DIR=$(dirname "$GRADLEW_PATH" | sed 's|^\./||')
+          if [ "$GRADLEW_DIR" = "." ]; then
+            echo "WORKING_DIR=." >> $GITHUB_ENV
+          else
+            echo "WORKING_DIR=$GRADLEW_DIR" >> $GITHUB_ENV
+          fi
+          echo "✅ Gradlew encontrado em: $GRADLEW_PATH"
+          echo "✅ Working directory definido como: ${{ env.WORKING_DIR }}"
         else
-          echo "❌ gradlew não encontrado!"
-          find . -name "gradlew" -type f
+          echo "❌ gradlew não encontrado em nenhum lugar!"
+          echo "Buscando todos os arquivos gradlew:"
+          find . -name "gradlew" -type f 2>/dev/null || echo "Nenhum gradlew encontrado"
+          echo "Buscando diretórios com build.gradle:"
+          find . -name "build.gradle*" -type f 2>/dev/null | head -5
           exit 1
         fi
-        echo "✅ Gradlew encontrado em: ${{ env.WORKING_DIR }}"
         
     - name: Setup Gradle Wrapper
       working-directory: ${{ env.WORKING_DIR }}
