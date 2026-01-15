@@ -1,0 +1,407 @@
+package com.bootreceiver.app.utils
+
+import android.util.Log
+import io.github.jan.supabase.SupabaseClient
+import io.github.jan.supabase.createSupabaseClient
+import io.github.jan.supabase.postgrest.Postgrest
+import io.github.jan.supabase.postgrest.from
+import io.github.jan.supabase.postgrest.query.Columns
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import kotlinx.serialization.Serializable
+
+/**
+ * Gerenciador para comunicação com Supabase
+ * 
+ * Esta classe gerencia a conexão com o Supabase e registra
+ * dispositivos na tabela 'devices'
+ */
+class SupabaseManager {
+    
+    private val client: SupabaseClient = createSupabaseClient(
+        supabaseUrl = SUPABASE_URL,
+        supabaseKey = SUPABASE_KEY
+    ) {
+        install(Postgrest)
+    }
+    
+    /**
+     * Verifica se há um comando de reiniciar app pendente
+     * 
+     * @param deviceId ID único do dispositivo
+     * @return DeviceCommand se houver comando pendente, null caso contrário
+     */
+    suspend fun getRestartAppCommand(deviceId: String): DeviceCommand? = withContext(Dispatchers.IO) {
+        try {
+            Log.d(TAG, "🔍 Verificando comando de reiniciar app para dispositivo: $deviceId")
+            
+            val response = client.from("device_commands")
+                .select(columns = Columns.ALL) {
+                    filter {
+                        eq("device_id", deviceId)
+                        eq("command", "restart_app")
+                        eq("executed", false)
+                    }
+                    // Ordena por data de criação (mais recente primeiro)
+                    // Limita a 1 resultado (pega apenas o mais recente)
+                }
+                .decodeSingle<DeviceCommand>()
+            
+            Log.d(TAG, "✅ Comando encontrado! ID: ${response.id}, Command: ${response.command}, Created: ${response.created_at}")
+            response
+        } catch (e: Exception) {
+            if (e.message?.contains("No rows") == true || 
+                e.message?.contains("not found") == true ||
+                e.message?.contains("No value") == true) {
+                Log.d(TAG, "ℹ️ Nenhum comando de reiniciar app pendente")
+                null
+            } else {
+                Log.e(TAG, "❌ Erro ao verificar comando: ${e.message}", e)
+                null
+            }
+        }
+    }
+    
+    /**
+     * Marca um comando específico como executado pelo ID
+     * 
+     * @param commandId ID do comando
+     * @return true se marcou com sucesso, false caso contrário
+     */
+    suspend fun markCommandAsExecutedById(commandId: String?): Boolean = withContext(Dispatchers.IO) {
+        if (commandId == null) {
+            Log.w(TAG, "⚠️ Tentando marcar comando sem ID")
+            return@withContext false
+        }
+        
+        try {
+            Log.d(TAG, "📝 Marcando comando como executado...")
+            
+            // Atualiza o campo executed para true e executed_at para agora
+            val updateData = mapOf(
+                "executed" to true,
+                "executed_at" to java.time.Instant.now().toString()
+            )
+            
+            val result = client.from("device_commands")
+                .update(updateData) {
+                    filter {
+                        eq("id", commandId)
+                        eq("executed", false) // Só atualiza se ainda não foi executado
+                    }
+                }
+            
+            // Verifica se realmente atualizou (busca o comando atualizado)
+            try {
+                val updated = client.from("device_commands")
+                    .select(columns = Columns.ALL) {
+                        filter {
+                            eq("id", commandId)
+                        }
+                    }
+                    .decodeSingle<DeviceCommand>()
+                
+                if (updated.executed) {
+                    Log.d(TAG, "✅ Comando marcado como executado com sucesso! (executed_at: ${updated.executed_at})")
+                    return@withContext true
+                } else {
+                    Log.e(TAG, "❌ Comando não foi atualizado! Ainda está como executed=false")
+                    return@withContext false
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "❌ Erro ao verificar se comando foi atualizado: ${e.message}", e)
+                // Mesmo assim retorna true porque tentou atualizar
+                return@withContext true
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "❌ Erro ao marcar comando como executado: ${e.message}", e)
+            false
+        }
+    }
+    
+    /**
+     * Deleta um comando específico pelo ID (alternativa à marcação)
+     * 
+     * @param commandId ID do comando
+     * @return true se deletou com sucesso, false caso contrário
+     */
+    suspend fun deleteCommandById(commandId: String?): Boolean = withContext(Dispatchers.IO) {
+        if (commandId == null) {
+            Log.w(TAG, "⚠️ Tentando deletar comando sem ID")
+            return@withContext false
+        }
+        
+        try {
+            Log.d(TAG, "🗑️ Deletando comando...")
+            
+            client.from("device_commands")
+                .delete {
+                    filter {
+                        eq("id", commandId)
+                    }
+                }
+            
+            Log.d(TAG, "✅ Comando deletado com sucesso!")
+            true
+        } catch (e: Exception) {
+            Log.e(TAG, "❌ Erro ao deletar comando: ${e.message}", e)
+            false
+        }
+    }
+    
+    /**
+     * Marca um comando como executado
+     * 
+     * @param deviceId ID único do dispositivo
+     * @param command Tipo de comando (ex: "restart_app")
+     * @return true se marcou com sucesso, false caso contrário
+     */
+    suspend fun markCommandAsExecuted(deviceId: String, command: String = "restart_app"): Boolean = withContext(Dispatchers.IO) {
+        try {
+            Log.d(TAG, "📝 Marcando comando como executado: device_id=$deviceId, command=$command")
+            
+            // Busca TODOS os comandos pendentes (pode haver múltiplos)
+            val commands = try {
+                client.from("device_commands")
+                    .select(columns = Columns.ALL) {
+                        filter {
+                            eq("device_id", deviceId)
+                            eq("command", command)
+                            eq("executed", false)
+                        }
+                    }
+                    .decodeList<DeviceCommand>()
+            } catch (e: Exception) {
+                if (e.message?.contains("No rows") == true || 
+                    e.message?.contains("not found") == true ||
+                    e.message?.contains("No value") == true) {
+                    Log.d(TAG, "ℹ️ Nenhum comando pendente encontrado")
+                    emptyList()
+                } else {
+                    Log.e(TAG, "❌ Erro ao buscar comandos: ${e.message}", e)
+                    return@withContext false
+                }
+            }
+            
+            if (commands.isEmpty()) {
+                Log.d(TAG, "ℹ️ Nenhum comando pendente para marcar como executado")
+                return@withContext true // Retorna true porque não há nada para fazer
+            }
+            
+            Log.d(TAG, "📋 Encontrados ${commands.size} comando(s) pendente(s)")
+            
+            // Marca TODOS os comandos pendentes como executados
+            var successCount = 0
+            for (cmd in commands) {
+                if (cmd.id != null) {
+                    try {
+                        val updateData = mapOf(
+                            "executed" to true,
+                            "executed_at" to java.time.Instant.now().toString()
+                        )
+                        
+                        client.from("device_commands")
+                            .update(updateData) {
+                                filter {
+                                    eq("id", cmd.id)
+                                }
+                            }
+                        
+                        successCount++
+                        Log.d(TAG, "✅ Comando ${cmd.id} marcado como executado")
+                    } catch (e: Exception) {
+                        Log.e(TAG, "❌ Erro ao marcar comando ${cmd.id}: ${e.message}", e)
+                    }
+                }
+            }
+            
+            if (successCount > 0) {
+                Log.d(TAG, "✅ Total: $successCount comando(s) marcado(s) como executado(s)")
+                return@withContext true
+            } else {
+                Log.e(TAG, "❌ Nenhum comando foi marcado como executado")
+                return@withContext false
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "❌ Erro crítico ao marcar comando como executado: ${e.message}", e)
+            false
+        }
+    }
+    
+    /**
+     * Verifica se o modo kiosk está ativo para o dispositivo
+     * 
+     * @param deviceId ID único do dispositivo
+     * @return true se kiosk_mode está ativo, false caso contrário, null se erro
+     */
+    suspend fun getKioskMode(deviceId: String): Boolean? = withContext(Dispatchers.IO) {
+        try {
+            Log.d(TAG, "🔍 Verificando modo kiosk para dispositivo: $deviceId")
+            
+            val device = client.from("lista_sticktv")
+                .select(columns = Columns.ALL) {
+                    filter {
+                        eq("codigo_dispositivo", deviceId)
+                    }
+                }
+                .decodeSingle<StickTVDevice>()
+            
+            val kioskMode = device.kiosk_mode ?: false
+            Log.d(TAG, "ℹ️ Modo kiosk: $kioskMode")
+            return@withContext kioskMode
+        } catch (e: Exception) {
+            if (e.message?.contains("No rows") == true || 
+                e.message?.contains("not found") == true ||
+                e.message?.contains("No value") == true) {
+                Log.d(TAG, "ℹ️ Dispositivo não encontrado. Modo kiosk: false (padrão)")
+                return@withContext false
+            } else {
+                Log.e(TAG, "❌ Erro ao verificar modo kiosk: ${e.message}", e)
+                return@withContext null
+            }
+        }
+    }
+    
+    /**
+     * Registra ou atualiza um dispositivo na tabela lista_sticktv
+     * 
+     * @param deviceId ID único do dispositivo (Android ID)
+     * @param unitName Nome da unidade (email ou nome personalizado)
+     * @return true se o registro foi bem-sucedido
+     */
+    suspend fun registerDevice(deviceId: String, unitName: String? = null): Boolean = withContext(Dispatchers.IO) {
+        try {
+            Log.d(TAG, "Registrando dispositivo: $deviceId com nome: $unitName")
+            
+            // Verifica se o dispositivo já existe
+            var existingDevice: StickTVDevice? = null
+            try {
+                existingDevice = client.from("lista_sticktv")
+                    .select(columns = Columns.ALL) {
+                        filter {
+                            eq("codigo_dispositivo", deviceId)
+                        }
+                    }
+                    .decodeSingle<StickTVDevice>()
+                Log.d(TAG, "Dispositivo encontrado no banco")
+            } catch (e: Exception) {
+                if (e.message?.contains("No rows") == true || 
+                    e.message?.contains("not found") == true) {
+                    Log.d(TAG, "Dispositivo não encontrado, será criado novo registro")
+                } else {
+                    Log.w(TAG, "Erro ao verificar dispositivo existente: ${e.message}")
+                }
+            }
+            
+            if (existingDevice != null) {
+                // Dispositivo já existe, atualiza last_seen e nome se fornecido
+                Log.d(TAG, "Dispositivo já existe. Atualizando...")
+                val updateData = mutableMapOf<String, Any>(
+                    "ultima_atualizacao" to java.time.Instant.now().toString()
+                )
+                
+                if (unitName != null && unitName.isNotBlank()) {
+                    updateData["nome"] = unitName
+                }
+                
+                client.from("lista_sticktv")
+                    .update(updateData) {
+                        filter {
+                            eq("codigo_dispositivo", deviceId)
+                        }
+                    }
+                
+                Log.d(TAG, "Dispositivo atualizado com sucesso")
+            } else {
+                // Novo dispositivo, cria registro
+                Log.d(TAG, "Criando novo registro de dispositivo...")
+                val newDevice = StickTVDevice(
+                    codigo_dispositivo = deviceId,
+                    nome = unitName,
+                    ativo = true
+                )
+                
+                client.from("lista_sticktv")
+                    .insert(newDevice)
+                
+                Log.d(TAG, "Dispositivo registrado com sucesso!")
+            }
+            
+            true
+        } catch (e: Exception) {
+            Log.e(TAG, "Erro ao registrar dispositivo: ${e.message}", e)
+            false
+        }
+    }
+    
+    /**
+     * Obtém a URL do PWA configurada para o dispositivo
+     * 
+     * @param deviceId ID único do dispositivo
+     * @return URL do PWA ou null se não encontrado
+     */
+    suspend fun getPWAUrl(deviceId: String): String? = withContext(Dispatchers.IO) {
+        try {
+            Log.d(TAG, "🔍 Buscando URL do PWA para dispositivo: $deviceId")
+            
+            val device = client.from("lista_sticktv")
+                .select(columns = Columns.ALL) {
+                    filter {
+                        eq("codigo_dispositivo", deviceId)
+                    }
+                }
+                .decodeSingle<StickTVDevice>()
+            
+            val url = device.url_pwa
+            Log.d(TAG, "ℹ️ URL do PWA: $url")
+            return@withContext url
+        } catch (e: Exception) {
+            if (e.message?.contains("No rows") == true || 
+                e.message?.contains("not found") == true ||
+                e.message?.contains("No value") == true) {
+                Log.d(TAG, "ℹ️ Dispositivo não encontrado ou sem URL configurada")
+                return@withContext null
+            } else {
+                Log.e(TAG, "❌ Erro ao buscar URL do PWA: ${e.message}", e)
+                return@withContext null
+            }
+        }
+    }
+    
+    companion object {
+        private const val TAG = "SupabaseManager"
+        private const val SUPABASE_URL = "https://base.muraltv.com.br"
+        private const val SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJyb2xlIjoiYW5vbiIsImlzcyI6InN1cGFiYXNlIiwiaWF0IjoxNzUyODA3NjAwLCJleHAiOjE5MTA1NzQwMDB9.P4goMdCvXKPk9ViLYlSUk7nR_zeW3yUw5ixjv7Mk99g"
+    }
+}
+
+/**
+ * Modelo de dados para dispositivo na tabela lista_sticktv
+ * Estrutura corresponde à tabela lista_sticktv no Supabase
+ */
+@Serializable
+data class StickTVDevice(
+    val id: String? = null,  // UUID
+    val codigo_dispositivo: String,  // Código único do dispositivo (Android ID)
+    val nome: String? = null,  // Nome da unidade
+    val url_pwa: String? = null,  // URL do PWA para abrir
+    val ativo: Boolean = true,  // Se o dispositivo está ativo
+    val kiosk_mode: Boolean? = false,  // Modo kiosk (bloqueia minimização)
+    val criado_em: String? = null,  // TIMESTAMP
+    val ultima_atualizacao: String? = null  // TIMESTAMP
+)
+
+/**
+ * Modelo de dados para comando de dispositivo
+ * Estrutura corresponde à tabela device_commands no Supabase
+ */
+@Serializable
+data class DeviceCommand(
+    val id: String? = null,  // UUID
+    val device_id: String,
+    val command: String,  // "restart_app" para reiniciar o app
+    val executed: Boolean = false,
+    val created_at: String? = null,  // TIMESTAMP WITH TIME ZONE
+    val executed_at: String? = null  // TIMESTAMP WITH TIME ZONE
+)
+

@@ -1,0 +1,186 @@
+name: Build and Release APK
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: 'Tag name (ex: v1.0.0)'
+        required: true
+        type: string
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Set up JDK 17
+      uses: actions/setup-java@v4
+      with:
+        distribution: 'temurin'
+        java-version: '17'
+        
+    - name: Setup Android SDK
+      uses: android-actions/setup-android@v3
+      with:
+        packages: 'platform-tools platforms;android-34 build-tools;34.0.0'
+        accept-android-sdk-licenses: true
+        
+    - name: Find gradlew and set working directory
+      id: find_gradlew
+      run: |
+        if [ -f "gradlew" ]; then
+          echo "WORKING_DIR=." >> $GITHUB_ENV
+        elif [ -f "MRIT Control/MRIT Control/gradlew" ]; then
+          echo "WORKING_DIR=MRIT Control/MRIT Control" >> $GITHUB_ENV
+        else
+          echo "❌ gradlew não encontrado!"
+          find . -name "gradlew" -type f
+          exit 1
+        fi
+        echo "✅ Gradlew encontrado em: ${{ env.WORKING_DIR }}"
+        
+    - name: Setup Gradle Wrapper
+      working-directory: ${{ env.WORKING_DIR }}
+      run: |
+        # Verifica se gradlew existe
+        if [ ! -f "./gradlew" ]; then
+          echo "❌ gradlew não encontrado no repositório!"
+          exit 1
+        fi
+        
+        # Verifica se gradle-wrapper.jar existe, se não, baixa ou gera
+        if [ ! -f "gradle/wrapper/gradle-wrapper.jar" ]; then
+          echo "📥 gradle-wrapper.jar não encontrado. Tentando baixar..."
+          mkdir -p gradle/wrapper
+          
+          # Tenta baixar da URL do GitHub (versão específica 8.2)
+          curl -f -L -o gradle/wrapper/gradle-wrapper.jar "https://raw.githubusercontent.com/gradle/gradle/v8.2.0/gradle/wrapper/gradle-wrapper.jar" || {
+            echo "⚠️ Falha na primeira URL, tentando URL alternativa..."
+            # Tenta URL alternativa do Gradle
+            curl -f -L -o gradle/wrapper/gradle-wrapper.jar "https://services.gradle.org/distributions/gradle-wrapper.jar" || {
+              echo "⚠️ Falha nas URLs, tentando gerar wrapper com Gradle instalado..."
+              # Última tentativa: usar Gradle instalado para gerar o wrapper
+              if command -v gradle &> /dev/null; then
+                GRADLE_VERSION=$(grep "distributionUrl" gradle/wrapper/gradle-wrapper.properties | sed -n 's/.*gradle-\([0-9.]*\)-.*/\1/p' || echo "8.2")
+                gradle wrapper --gradle-version "$GRADLE_VERSION" || {
+                  echo "❌ Erro: Não foi possível gerar gradle-wrapper.jar"
+                  exit 1
+                }
+              else
+                echo "❌ Erro: Não foi possível baixar ou gerar gradle-wrapper.jar"
+                exit 1
+              fi
+            }
+          }
+          
+          # Verifica se o arquivo foi criado e não está vazio
+          if [ ! -f "gradle/wrapper/gradle-wrapper.jar" ] || [ ! -s "gradle/wrapper/gradle-wrapper.jar" ]; then
+            echo "❌ Erro: gradle-wrapper.jar está vazio ou não existe"
+            exit 1
+          fi
+          
+          echo "✅ gradle-wrapper.jar configurado com sucesso"
+          ls -lh gradle/wrapper/gradle-wrapper.jar
+        else
+          echo "✅ gradle-wrapper.jar já existe"
+          ls -lh gradle/wrapper/gradle-wrapper.jar
+        fi
+        
+        chmod +x ./gradlew
+        echo "✅ Gradle wrapper pronto para uso"
+      
+    - name: Cache Gradle dependencies
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.gradle/caches
+          ~/.gradle/wrapper
+        key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+        restore-keys: |
+          ${{ runner.os }}-gradle-
+      
+    - name: Get version from tag
+      id: tag
+      run: |
+        if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+          TAG_NAME="${{ github.event.inputs.tag_name }}"
+        else
+          TAG_NAME=${GITHUB_REF#refs/tags/}
+        fi
+        echo "tag_name=$TAG_NAME" >> $GITHUB_OUTPUT
+        echo "Tag: $TAG_NAME"
+      
+    - name: Build Release APK
+      working-directory: ${{ env.WORKING_DIR }}
+      run: ./gradlew assembleRelease --stacktrace --no-daemon --warning-mode all
+      env:
+        ANDROID_HOME: ${{ env.ANDROID_HOME }}
+        ANDROID_SDK_ROOT: ${{ env.ANDROID_SDK_ROOT }}
+      
+    - name: Locate APK (signed or unsigned)
+      working-directory: ${{ env.WORKING_DIR }}
+      run: |
+        APK_SIGNED="app/build/outputs/apk/release/app-release.apk"
+        APK_UNSIGNED="app/build/outputs/apk/release/app-release-unsigned.apk"
+        
+        if [ -f "$APK_SIGNED" ]; then
+          APK_PATH="$APK_SIGNED"
+        elif [ -f "$APK_UNSIGNED" ]; then
+          APK_PATH="$APK_UNSIGNED"
+        else
+          echo "APK não encontrado! Verificando estrutura de diretórios..."
+          find app/build -name "*.apk" || echo "Nenhum APK encontrado"
+          ls -la app/build/outputs/apk/ || echo "Diretório não existe"
+          exit 1
+        fi
+        
+        echo "APK_PATH=${{ env.WORKING_DIR }}/$APK_PATH" >> $GITHUB_ENV
+        ls -lh "$APK_PATH"
+        echo "✅ APK localizado em: $APK_PATH"
+      
+    - name: Get APK file info
+      id: apk_info
+      working-directory: ${{ env.WORKING_DIR }}
+      run: |
+        APK_PATH="${APK_PATH:-app/build/outputs/apk/release/app-release.apk}"
+        APK_SIZE=$(du -h "$APK_PATH" | cut -f1)
+        APK_NAME="MRIT-Control-${{ steps.tag.outputs.tag_name }}.apk"
+        echo "apk_size=$APK_SIZE" >> $GITHUB_OUTPUT
+        echo "apk_name=$APK_NAME" >> $GITHUB_OUTPUT
+        echo "APK Size: $APK_SIZE"
+        echo "APK Name: $APK_NAME"
+      
+    - name: Create Release
+      uses: softprops/action-gh-release@v1
+      with:
+        tag_name: ${{ steps.tag.outputs.tag_name }}
+        name: Release ${{ steps.tag.outputs.tag_name }}
+        body: |
+          ## 🚀 Release ${{ steps.tag.outputs.tag_name }}
+          
+          ### 📦 APK
+          - **Tamanho**: ${{ steps.apk_info.outputs.apk_size }}
+          - **Commit**: ${{ github.sha }}
+          - **Build Date**: $(date -u +'%Y-%m-%d %H:%M:%S UTC')
+          
+          ### 📥 Download
+          Baixe o APK abaixo e instale no seu dispositivo Android.
+        files: |
+          ${{ env.APK_PATH }}
+        draft: false
+        prerelease: false
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        
+    - name: Upload APK artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: app-release-${{ steps.tag.outputs.tag_name }}
+        path: ${{ env.APK_PATH }}
+        retention-days: 90
