@@ -98,6 +98,14 @@ class BootReceiver : BroadcastReceiver() {
                 } catch (e: Exception) {
                     Log.e(TAG, "Erro ao iniciar KioskModeService: ${e.message}", e)
                 }
+                
+                // Inicia o WorkManager para verificar modo kiosk mesmo quando app está fechado
+                try {
+                    com.bootreceiver.app.worker.KioskModeWorker.start(context)
+                    Log.d(TAG, "KioskModeWorker iniciado")
+                } catch (e: Exception) {
+                    Log.e(TAG, "Erro ao iniciar KioskModeWorker: ${e.message}", e)
+                }
             }
             else -> {
                 Log.w(TAG, "Ação desconhecida recebida: ${intent.action}")

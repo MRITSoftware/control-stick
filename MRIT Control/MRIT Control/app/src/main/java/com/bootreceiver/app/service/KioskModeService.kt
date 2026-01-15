@@ -185,62 +185,36 @@ class KioskModeService : Service() {
     }
     
     /**
-     * Aplica o modo kiosk: garante que o app/URL configurado esteja rodando
+     * Aplica o modo kiosk: garante que o app configurado esteja rodando
      * e inicia monitoramento agressivo para prevenir minimização
      * Funciona mesmo em background - sempre verifica e reabre se necessário
      */
     private fun applyKioskMode() {
         val preferenceManager = PreferenceManager(this)
-        val pwaUrl = preferenceManager.getPWAUrl()
         val targetPackage = preferenceManager.getTargetPackageName()
-        val targetToOpen = pwaUrl ?: targetPackage
         
-        if (targetToOpen.isNullOrEmpty()) {
-            Log.w(TAG, "⚠️ Nenhum app ou URL configurado. Não é possível aplicar modo kiosk.")
+        if (targetPackage.isNullOrEmpty()) {
+            Log.w(TAG, "⚠️ Nenhum app configurado. Não é possível aplicar modo kiosk.")
             return
         }
         
-        Log.d(TAG, "🔒 Aplicando modo kiosk para: $targetToOpen")
+        Log.d(TAG, "🔒 Aplicando modo kiosk para: $targetPackage")
         Log.d(TAG, "📱 Serviço funcionará em BACKGROUND - sempre verificará e reabrirá se necessário")
         
         val appLauncher = AppLauncher(this)
         
-        // IMPORTANTE: Sempre abre o app/URL imediatamente quando kiosk é ativado
+        // IMPORTANTE: Sempre abre o app imediatamente quando kiosk é ativado
         // Isso garante que funcione mesmo se o app estiver fechado
-        if (pwaUrl != null) {
-            Log.d(TAG, "📱 Abrindo URL no navegador: $pwaUrl")
-            // Tenta abrir múltiplas vezes para garantir que funcione
-            appLauncher.launchUrl(pwaUrl)
-            
-            // Aguarda um pouco e tenta novamente para garantir
-            android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
-                appLauncher.launchUrl(pwaUrl)
-            }, 500)
-            
-            // Tenta forçar fullscreen no navegador (se possível)
-            try {
-                val browserPackage = getDefaultBrowserPackage()
-                if (browserPackage != null) {
-                    Log.d(TAG, "🔍 Navegador identificado: $browserPackage")
-                    Log.d(TAG, "ℹ️ Para forçar fullscreen, use: adb shell settings put global policy_control immersive.full=$browserPackage")
-                }
-            } catch (e: Exception) {
-                Log.w(TAG, "Não foi possível identificar navegador: ${e.message}")
+        Log.d(TAG, "📱 Abrindo app: $targetPackage")
+        appLauncher.launchApp(targetPackage)
+        
+        // Aguarda um pouco e verifica se abriu, se não, tenta novamente
+        android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+            if (!isAppRunning(targetPackage)) {
+                Log.d(TAG, "⚠️ App não abriu na primeira tentativa. Tentando novamente...")
+                appLauncher.launchApp(targetPackage)
             }
-        } else if (targetPackage != null) {
-            // Se for package name, SEMPRE abre (mesmo se estiver rodando)
-            // Isso garante que o app seja trazido para frente
-            Log.d(TAG, "📱 Abrindo app: $targetPackage")
-            appLauncher.launchApp(targetPackage)
-            
-            // Aguarda um pouco e verifica se abriu, se não, tenta novamente
-            android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
-                if (!isAppRunning(targetPackage)) {
-                    Log.d(TAG, "⚠️ App não abriu na primeira tentativa. Tentando novamente...")
-                    appLauncher.launchApp(targetPackage)
-                }
-            }, 1000)
-        }
+        }, 1000)
         
         // Inicia overlay para interceptar gestos (requer permissão SYSTEM_ALERT_WINDOW)
         try {
@@ -256,32 +230,16 @@ class KioskModeService : Service() {
         // Inicia monitoramento agressivo em uma coroutine separada
         // Este monitoramento funciona mesmo em background
         serviceScope.launch {
-            aggressiveKioskMonitoring(targetToOpen)
+            aggressiveKioskMonitoring(targetPackage)
         }
     }
     
     /**
-     * Tenta identificar o package do navegador padrão
-     */
-    private fun getDefaultBrowserPackage(): String? {
-        return try {
-            val intent = Intent(Intent.ACTION_VIEW, android.net.Uri.parse("http://www.example.com"))
-            val resolveInfo = packageManager.resolveActivity(intent, PackageManager.MATCH_DEFAULT_ONLY)
-            resolveInfo?.activityInfo?.packageName
-        } catch (e: Exception) {
-            Log.w(TAG, "Não foi possível identificar navegador padrão: ${e.message}")
-            null
-        }
-    }
-    
-    /**
-     * Monitoramento agressivo do app/URL quando kiosk está ativo
+     * Monitoramento agressivo do app quando kiosk está ativo
      * Verifica constantemente e reabre imediatamente se minimizado ou fechado
      */
-    private suspend fun aggressiveKioskMonitoring(targetPackageOrUrl: String) {
+    private suspend fun aggressiveKioskMonitoring(targetPackage: String) {
         var consecutiveFailures = 0
-        val preferenceManager = PreferenceManager(this@KioskModeService)
-        val isUrl = targetPackageOrUrl.startsWith("http://") || targetPackageOrUrl.startsWith("https://")
         
         while (isRunning) {
             try {
@@ -289,47 +247,32 @@ class KioskModeService : Service() {
                 if (kioskMode == true) {
                     val appLauncher = AppLauncher(this@KioskModeService)
                     
-                    // Se for URL, sempre reabre (navegador pode ter sido fechado)
-                    if (isUrl) {
-                        // Pequeno delay para evitar abrir múltiplas vezes rapidamente
-                        // Isso previne travamentos em players
-                        delay(1000)
-                        Log.d(TAG, "🔄 Reabrindo URL no navegador: $targetPackageOrUrl")
-                        val success = appLauncher.launchUrl(targetPackageOrUrl)
-                        if (success) {
-                            consecutiveFailures = 0
-                        } else {
-                            consecutiveFailures++
-                            Log.w(TAG, "⚠️ Falha ao reabrir URL (tentativa $consecutiveFailures)")
+                    // Verifica se o app está rodando
+                    if (!isAppRunning(targetPackage)) {
+                        consecutiveFailures++
+                        Log.d(TAG, "🚨 APP FECHADO/MINIMIZADO! REABRINDO IMEDIATAMENTE... (tentativa $consecutiveFailures)")
+                        
+                        // Tenta abrir o app múltiplas vezes rapidamente
+                        appLauncher.launchApp(targetPackage)
+                        delay(300) // Aguarda 300ms
+                        
+                        // Se ainda não está rodando, tenta novamente
+                        if (!isAppRunning(targetPackage)) {
+                            Log.d(TAG, "⚠️ Tentativa 2: Reabrindo app...")
+                            appLauncher.launchApp(targetPackage)
+                            delay(500)
+                        }
+                        
+                        // Se ainda não está rodando, tenta mais uma vez
+                        if (!isAppRunning(targetPackage)) {
+                            Log.d(TAG, "⚠️ Tentativa 3: Reabrindo app...")
+                            appLauncher.launchApp(targetPackage)
                         }
                     } else {
-                        // Se for package name, verifica se está rodando
-                        if (!isAppRunning(targetPackageOrUrl)) {
-                            consecutiveFailures++
-                            Log.d(TAG, "🚨 APP FECHADO/MINIMIZADO! REABRINDO IMEDIATAMENTE... (tentativa $consecutiveFailures)")
-                            
-                            // Tenta abrir o app múltiplas vezes rapidamente
-                            appLauncher.launchApp(targetPackageOrUrl)
-                            delay(300) // Aguarda 300ms
-                            
-                            // Se ainda não está rodando, tenta novamente
-                            if (!isAppRunning(targetPackageOrUrl)) {
-                                Log.d(TAG, "⚠️ Tentativa 2: Reabrindo app...")
-                                appLauncher.launchApp(targetPackageOrUrl)
-                                delay(500)
-                            }
-                            
-                            // Se ainda não está rodando, tenta mais uma vez
-                            if (!isAppRunning(targetPackageOrUrl)) {
-                                Log.d(TAG, "⚠️ Tentativa 3: Reabrindo app...")
-                                appLauncher.launchApp(targetPackageOrUrl)
-                            }
-                        } else {
-                            // App está rodando, reseta contador de falhas
-                            if (consecutiveFailures > 0) {
-                                Log.d(TAG, "✅ App reaberto com sucesso após $consecutiveFailures tentativas")
-                                consecutiveFailures = 0
-                            }
+                        // App está rodando, reseta contador de falhas
+                        if (consecutiveFailures > 0) {
+                            Log.d(TAG, "✅ App reaberto com sucesso após $consecutiveFailures tentativas")
+                            consecutiveFailures = 0
                         }
                     }
                     delay(CHECK_INTERVAL_MS) // Verifica muito frequentemente
@@ -364,52 +307,41 @@ class KioskModeService : Service() {
     }
     
     /**
-     * Garante que o app/URL configurado esteja rodando (se kiosk estiver ativo)
+     * Garante que o app configurado esteja rodando (se kiosk estiver ativo)
      * Verifica mais frequentemente quando kiosk está ativo
      */
     private fun ensureAppIsRunning() {
         val preferenceManager = PreferenceManager(this)
-        val pwaUrl = preferenceManager.getPWAUrl()
         val targetPackage = preferenceManager.getTargetPackageName()
-        val targetToOpen = pwaUrl ?: targetPackage
         
-        if (targetToOpen.isNullOrEmpty()) {
+        if (targetPackage.isNullOrEmpty()) {
             return
         }
         
         val appLauncher = AppLauncher(this)
         
-        // Se for URL, sempre reabre
-        if (pwaUrl != null) {
-            Log.d(TAG, "⚠️⚠️⚠️ REABRINDO URL COM KIOSK ATIVO! REABRINDO IMEDIATAMENTE...")
-            // Pequeno delay para evitar travamentos
+        // Se for package name, verifica se está rodando
+        if (!isAppRunning(targetPackage)) {
+            Log.d(TAG, "⚠️⚠️⚠️ APP MINIMIZADO COM KIOSK ATIVO! REABRINDO IMEDIATAMENTE...")
+            
+            // Tenta múltiplas vezes rapidamente
+            appLauncher.launchApp(targetPackage)
+            
+            // Aguarda 200ms e tenta novamente (muito mais rápido)
             android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
-                appLauncher.launchUrl(pwaUrl)
-            }, 300)
-        } else if (targetPackage != null) {
-            // Se for package name, verifica se está rodando
-            if (!isAppRunning(targetPackage)) {
-                Log.d(TAG, "⚠️⚠️⚠️ APP MINIMIZADO COM KIOSK ATIVO! REABRINDO IMEDIATAMENTE...")
-                
-                // Tenta múltiplas vezes rapidamente
-                appLauncher.launchApp(targetPackage)
-                
-                // Aguarda 200ms e tenta novamente (muito mais rápido)
-                android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
-                    if (!isAppRunning(targetPackage)) {
-                        Log.d(TAG, "⚠️ Tentativa 2: Reabrindo app...")
-                        appLauncher.launchApp(targetPackage)
-                    }
-                }, 200)
-                
-                // Aguarda mais 500ms e tenta novamente
-                android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
-                    if (!isAppRunning(targetPackage)) {
-                        Log.d(TAG, "⚠️ Tentativa 3: Reabrindo app...")
-                        appLauncher.launchApp(targetPackage)
-                    }
-                }, 700)
-            }
+                if (!isAppRunning(targetPackage)) {
+                    Log.d(TAG, "⚠️ Tentativa 2: Reabrindo app...")
+                    appLauncher.launchApp(targetPackage)
+                }
+            }, 200)
+            
+            // Aguarda mais 500ms e tenta novamente
+            android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                if (!isAppRunning(targetPackage)) {
+                    Log.d(TAG, "⚠️ Tentativa 3: Reabrindo app...")
+                    appLauncher.launchApp(targetPackage)
+                }
+            }, 700)
         }
     }
     

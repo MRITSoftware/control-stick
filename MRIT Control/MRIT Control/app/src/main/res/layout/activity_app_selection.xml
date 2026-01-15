@@ -56,26 +56,12 @@
         android:layout_marginBottom="8dp"
         android:elevation="4dp" />
 
-    <!-- Botão para inserir URL -->
-    <Button
-        android:id="@+id/buttonAddUrl"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_below="@id/searchEditText"
-        android:text="Ou inserir URL do PWA"
-        android:textSize="14sp"
-        android:padding="12dp"
-        android:layout_marginBottom="16dp"
-        android:background="@drawable/glassmorphism_card"
-        android:textColor="#3B82F6"
-        android:elevation="4dp" />
-
     <!-- Lista de aplicativos -->
     <ListView
         android:id="@+id/listViewApps"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
-        android:layout_below="@id/buttonAddUrl"
+        android:layout_below="@id/searchEditText"
         android:layout_above="@id/footerLayout"
         android:background="@drawable/glassmorphism_card"
         android:divider="#30FFFFFF"

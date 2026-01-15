@@ -82,6 +82,16 @@ class BootReceiverApplication : Application() {
                 Log.e(TAG, "Erro ao iniciar KioskModeService: ${e.message}", e)
             }
         }, 2000) // Delay de 2 segundos
+        
+        // Inicia o WorkManager para verificar modo kiosk mesmo quando app está fechado
+        android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+            try {
+                com.bootreceiver.app.worker.KioskModeWorker.start(this)
+                Log.d(TAG, "KioskModeWorker iniciado")
+            } catch (e: Exception) {
+                Log.e(TAG, "Erro ao iniciar KioskModeWorker: ${e.message}", e)
+            }
+        }, 3000) // Delay de 3 segundos
     }
     
     /**

@@ -36,7 +36,6 @@ class AppSelectionActivity : AppCompatActivity() {
     
     private lateinit var listView: ListView
     private lateinit var searchEditText: EditText
-    private lateinit var buttonAddUrl: android.widget.Button
     private lateinit var preferenceManager: PreferenceManager
     private val appsList = mutableListOf<AppInfo>()
     private val filteredAppsList = mutableListOf<AppInfo>()
@@ -57,18 +56,14 @@ class AppSelectionActivity : AppCompatActivity() {
             return
         }
         
-        // Se já estiver configurado, fecha esta activity e abre o app/URL configurado
+        // Se já estiver configurado, fecha esta activity e abre o app configurado
         if (preferenceManager.isConfigured()) {
-            Log.d(TAG, "App/URL já configurado. Abrindo...")
+            Log.d(TAG, "App já configurado. Abrindo...")
             val appLauncher = com.bootreceiver.app.utils.AppLauncher(this)
             
-            // Tenta abrir URL primeiro, depois package name
-            val pwaUrl = preferenceManager.getPWAUrl()
             val targetPackage = preferenceManager.getTargetPackageName()
-            
-            val targetToOpen = pwaUrl ?: targetPackage
-            if (targetToOpen != null) {
-                appLauncher.launchAppOrUrl(targetToOpen)
+            if (targetPackage != null) {
+                appLauncher.launchApp(targetPackage)
             }
             finish()
             return
@@ -168,7 +163,6 @@ class AppSelectionActivity : AppCompatActivity() {
     private fun setupUI() {
         listView = findViewById(R.id.listViewApps)
         searchEditText = findViewById(R.id.searchEditText)
-        buttonAddUrl = findViewById(R.id.buttonAddUrl)
         
         // Inicializa adapter vazio
         adapter = AppListAdapter(filteredAppsList)
@@ -176,11 +170,6 @@ class AppSelectionActivity : AppCompatActivity() {
         
         // Configura a barra de pesquisa
         setupSearchBar()
-        
-        // Configura botão para inserir URL
-        buttonAddUrl.setOnClickListener {
-            showUrlInputDialog()
-        }
         
         // Carrega lista de apps em background
         loadInstalledApps()
@@ -190,73 +179,6 @@ class AppSelectionActivity : AppCompatActivity() {
             val selectedApp = filteredAppsList[position]
             showConfirmationDialog(selectedApp)
         }
-    }
-    
-    /**
-     * Mostra diálogo para inserir URL do PWA
-     */
-    private fun showUrlInputDialog() {
-        val input = EditText(this)
-        input.hint = "https://app.muraltv.com.br"
-        input.inputType = android.text.InputType.TYPE_TEXT_VARIATION_URI
-        input.setText("https://")
-        
-        val dialog = AlertDialog.Builder(this)
-            .setTitle("Inserir URL do PWA")
-            .setMessage(
-                "Digite a URL do PWA que deve ser aberto automaticamente:\n\n" +
-                "Exemplo: https://app.muraltv.com.br"
-            )
-            .setView(input)
-            .setPositiveButton("Confirmar") { _, _ ->
-                val url = input.text.toString().trim()
-                if (url.isBlank()) {
-                    Toast.makeText(this, "Por favor, informe uma URL válida", Toast.LENGTH_SHORT).show()
-                    showUrlInputDialog() // Mostra novamente
-                } else if (!url.startsWith("http://") && !url.startsWith("https://")) {
-                    Toast.makeText(this, "URL deve começar com http:// ou https://", Toast.LENGTH_SHORT).show()
-                    showUrlInputDialog() // Mostra novamente
-                } else {
-                    selectUrl(url)
-                }
-            }
-            .setNegativeButton("Cancelar", null)
-            .setCancelable(true)
-            .create()
-        
-        dialog.show()
-        // Aplica cores customizadas aos botões
-        dialog.getButton(AlertDialog.BUTTON_POSITIVE)?.apply {
-            setTextColor(android.graphics.Color.parseColor("#10B981")) // Verde
-            textSize = 16f
-            typeface = android.graphics.Typeface.DEFAULT_BOLD
-        }
-        dialog.getButton(AlertDialog.BUTTON_NEGATIVE)?.apply {
-            setTextColor(android.graphics.Color.parseColor("#EF4444")) // Vermelho
-            textSize = 16f
-            typeface = android.graphics.Typeface.DEFAULT_BOLD
-        }
-    }
-    
-    /**
-     * Salva a URL selecionada e fecha a activity
-     */
-    private fun selectUrl(url: String) {
-        Log.d(TAG, "URL selecionada: $url")
-        
-        // Salva a URL
-        preferenceManager.savePWAUrl(url)
-        
-        Toast.makeText(
-            this,
-            "URL configurada: $url\nA URL será aberta automaticamente no próximo boot.",
-            Toast.LENGTH_LONG
-        ).show()
-        
-        // Aguarda um pouco e fecha a activity
-        listView.postDelayed({
-            finish()
-        }, 2000)
     }
     
     /**
