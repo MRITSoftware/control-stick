@@ -80,31 +80,56 @@ jobs:
           # Cria o diretório se não existir
           mkdir -p gradle/wrapper
           
-          # Baixa o gradle-wrapper.jar
-          # URL oficial do Gradle wrapper JAR (versão 8.2)
-          # Este é um JAR genérico que funciona com qualquer versão do Gradle
+          # Baixa o gradle-wrapper.jar usando múltiplas fontes confiáveis
           echo "Baixando gradle-wrapper.jar..."
-          curl -L -o gradle/wrapper/gradle-wrapper.jar \
-            "https://raw.githubusercontent.com/gradle/gradle/v${GRADLE_VERSION}/gradle/wrapper/gradle-wrapper.jar" || \
-          curl -L -o gradle/wrapper/gradle-wrapper.jar \
-            "https://github.com/gradle/gradle/raw/v${GRADLE_VERSION}/gradle/wrapper/gradle-wrapper.jar" || \
-          curl -L -o gradle/wrapper/gradle-wrapper.jar \
-            "https://raw.githubusercontent.com/gradle/gradle/v8.2/gradle/wrapper/gradle-wrapper.jar" || {
-            echo "Erro: Não foi possível baixar o gradle-wrapper.jar"
+          
+          # Tenta baixar do Maven Central primeiro (mais confiável)
+          # O wrapper JAR é compatível entre versões, então usamos uma versão conhecida
+          DOWNLOAD_SUCCESS=false
+          
+          # URL do Maven Central (wrapper 8.4 funciona com Gradle 8.2+)
+          curl -L -f -o gradle/wrapper/gradle-wrapper.jar \
+            "https://repo1.maven.org/maven2/org/gradle/gradle-wrapper/8.4/gradle-wrapper-8.4.jar" && DOWNLOAD_SUCCESS=true
+          
+          if [ "$DOWNLOAD_SUCCESS" = false ]; then
+            # Fallback: URL direta do Gradle
+            curl -L -f -o gradle/wrapper/gradle-wrapper.jar \
+              "https://raw.githubusercontent.com/gradle/gradle/v8.4/gradle/wrapper/gradle-wrapper.jar" && DOWNLOAD_SUCCESS=true
+          fi
+          
+          if [ "$DOWNLOAD_SUCCESS" = false ]; then
+            # Fallback 2: URL alternativa do GitHub
+            curl -L -f -o gradle/wrapper/gradle-wrapper.jar \
+              "https://github.com/gradle/gradle/raw/v8.4/gradle/wrapper/gradle-wrapper.jar" && DOWNLOAD_SUCCESS=true
+          fi
+          
+          if [ "$DOWNLOAD_SUCCESS" = false ]; then
+            echo "Erro: Não foi possível baixar o gradle-wrapper.jar de nenhuma fonte"
             echo "Estrutura do diretório:"
             ls -la gradle/wrapper/ 2>/dev/null || echo "Diretório não existe"
             exit 1
-          }
+          fi
           
           # Verifica se o download foi bem-sucedido
           if [ ! -f "./gradle/wrapper/gradle-wrapper.jar" ] || [ ! -s "./gradle/wrapper/gradle-wrapper.jar" ]; then
             echo "Erro: gradle-wrapper.jar não foi baixado corretamente"
+            echo "Tamanho do arquivo:"
+            ls -lh gradle/wrapper/gradle-wrapper.jar 2>/dev/null || echo "Arquivo não existe"
             exit 1
           fi
           
-          echo "gradle-wrapper.jar baixado com sucesso ($(du -h gradle/wrapper/gradle-wrapper.jar | cut -f1))"
+          FILE_SIZE=$(stat -f%z gradle/wrapper/gradle-wrapper.jar 2>/dev/null || stat -c%s gradle/wrapper/gradle-wrapper.jar 2>/dev/null || echo "unknown")
+          echo "gradle-wrapper.jar baixado com sucesso (tamanho: $FILE_SIZE bytes)"
         else
           echo "gradle-wrapper.jar já existe"
+        fi
+        
+        # Verificação final antes de continuar
+        if [ ! -f "./gradle/wrapper/gradle-wrapper.jar" ]; then
+          echo "ERRO CRÍTICO: gradle-wrapper.jar não existe após setup!"
+          echo "Conteúdo do diretório gradle/wrapper:"
+          ls -la gradle/wrapper/ 2>/dev/null || echo "Diretório não existe"
+          exit 1
         fi
         
         echo "Gradle wrapper verificado e pronto para uso"
