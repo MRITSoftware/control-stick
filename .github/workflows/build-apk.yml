@@ -61,9 +61,54 @@ jobs:
           exit 1
         fi
         chmod +x ./gradlew
-        echo "Gradle wrapper pronto para uso"
         
-      
+        # Verifica se o gradle-wrapper.jar existe
+        if [ ! -f "./gradle/wrapper/gradle-wrapper.jar" ]; then
+          echo "gradle-wrapper.jar não encontrado. Baixando..."
+          
+          # Lê a versão do Gradle do arquivo properties
+          GRADLE_VERSION="8.2"
+          if [ -f "./gradle/wrapper/gradle-wrapper.properties" ]; then
+            DIST_URL=$(grep "distributionUrl" gradle/wrapper/gradle-wrapper.properties)
+            if [[ $DIST_URL =~ gradle-([0-9]+\.[0-9]+) ]]; then
+              GRADLE_VERSION="${BASH_REMATCH[1]}"
+            fi
+          fi
+          
+          echo "Versão do Gradle detectada: $GRADLE_VERSION"
+          
+          # Cria o diretório se não existir
+          mkdir -p gradle/wrapper
+          
+          # Baixa o gradle-wrapper.jar
+          # URL oficial do Gradle wrapper JAR (versão 8.2)
+          # Este é um JAR genérico que funciona com qualquer versão do Gradle
+          echo "Baixando gradle-wrapper.jar..."
+          curl -L -o gradle/wrapper/gradle-wrapper.jar \
+            "https://raw.githubusercontent.com/gradle/gradle/v${GRADLE_VERSION}/gradle/wrapper/gradle-wrapper.jar" || \
+          curl -L -o gradle/wrapper/gradle-wrapper.jar \
+            "https://github.com/gradle/gradle/raw/v${GRADLE_VERSION}/gradle/wrapper/gradle-wrapper.jar" || \
+          curl -L -o gradle/wrapper/gradle-wrapper.jar \
+            "https://raw.githubusercontent.com/gradle/gradle/v8.2/gradle/wrapper/gradle-wrapper.jar" || {
+            echo "Erro: Não foi possível baixar o gradle-wrapper.jar"
+            echo "Estrutura do diretório:"
+            ls -la gradle/wrapper/ 2>/dev/null || echo "Diretório não existe"
+            exit 1
+          }
+          
+          # Verifica se o download foi bem-sucedido
+          if [ ! -f "./gradle/wrapper/gradle-wrapper.jar" ] || [ ! -s "./gradle/wrapper/gradle-wrapper.jar" ]; then
+            echo "Erro: gradle-wrapper.jar não foi baixado corretamente"
+            exit 1
+          fi
+          
+          echo "gradle-wrapper.jar baixado com sucesso ($(du -h gradle/wrapper/gradle-wrapper.jar | cut -f1))"
+        else
+          echo "gradle-wrapper.jar já existe"
+        fi
+        
+        echo "Gradle wrapper verificado e pronto para uso"
+        
     - name: Build APK
       working-directory: ${{ env.WORKING_DIR }}
       run: ./gradlew assembleRelease --stacktrace
