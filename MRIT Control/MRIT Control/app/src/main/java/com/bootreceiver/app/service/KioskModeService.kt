@@ -1,6 +1,7 @@
 package com.bootreceiver.app.service
 
 import android.app.ActivityManager
+import android.app.AlarmManager
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -158,7 +159,14 @@ class KioskModeService : Service() {
                 }
                 
                 // Usa intervalo menor quando kiosk está ativo, maior quando inativo
-                delay(if (kioskMode == true) CHECK_INTERVAL_MS else BACKGROUND_CHECK_INTERVAL_MS)
+                // Quando inativo, verifica mais frequentemente para detectar mudanças rapidamente
+                val delayTime = if (kioskMode == true) {
+                    CHECK_INTERVAL_MS
+                } else {
+                    // Verifica a cada 2 segundos quando inativo para detectar ativação rapidamente
+                    2000L
+                }
+                delay(delayTime)
                 
             } catch (e: Exception) {
                 consecutiveErrors++
@@ -197,14 +205,19 @@ class KioskModeService : Service() {
         
         val appLauncher = AppLauncher(this)
         
-        // Se for URL, sempre abre (navegador)
+        // IMPORTANTE: Sempre abre o app/URL imediatamente quando kiosk é ativado
+        // Isso garante que funcione mesmo se o app estiver fechado
         if (pwaUrl != null) {
             Log.d(TAG, "📱 Abrindo URL no navegador: $pwaUrl")
+            // Tenta abrir múltiplas vezes para garantir que funcione
             appLauncher.launchUrl(pwaUrl)
             
+            // Aguarda um pouco e tenta novamente para garantir
+            android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                appLauncher.launchUrl(pwaUrl)
+            }, 500)
+            
             // Tenta forçar fullscreen no navegador (se possível)
-            // Nota: Forçar fullscreen em apps de terceiros requer root ou ADB
-            // Mas o serviço continuará monitorando e reabrindo se necessário
             try {
                 val browserPackage = getDefaultBrowserPackage()
                 if (browserPackage != null) {
@@ -215,13 +228,18 @@ class KioskModeService : Service() {
                 Log.w(TAG, "Não foi possível identificar navegador: ${e.message}")
             }
         } else if (targetPackage != null) {
-            // Se for package name, verifica se está rodando
-            if (!isAppRunning(targetPackage)) {
-                Log.d(TAG, "📱 App não está rodando. Abrindo...")
-                appLauncher.launchApp(targetPackage)
-            } else {
-                Log.d(TAG, "✅ App já está rodando")
-            }
+            // Se for package name, SEMPRE abre (mesmo se estiver rodando)
+            // Isso garante que o app seja trazido para frente
+            Log.d(TAG, "📱 Abrindo app: $targetPackage")
+            appLauncher.launchApp(targetPackage)
+            
+            // Aguarda um pouco e verifica se abriu, se não, tenta novamente
+            android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                if (!isAppRunning(targetPackage)) {
+                    Log.d(TAG, "⚠️ App não abriu na primeira tentativa. Tentando novamente...")
+                    appLauncher.launchApp(targetPackage)
+                }
+            }, 1000)
         }
         
         // Inicia overlay para interceptar gestos (requer permissão SYSTEM_ALERT_WINDOW)
@@ -481,7 +499,7 @@ class KioskModeService : Service() {
         // Isso garante que o serviço continue funcionando mesmo se for morto pelo sistema
         serviceScope.launch {
             try {
-                delay(2000) // Aguarda 2 segundos
+                delay(1000) // Aguarda 1 segundo
                 val kioskMode = supabaseManager.getKioskMode(deviceId)
                 if (kioskMode == true) {
                     Log.d(TAG, "🔄 Kiosk ainda ativo - reiniciando serviço em background...")
@@ -491,10 +509,54 @@ class KioskModeService : Service() {
                     } else {
                         startService(restartIntent)
                     }
+                    
+                    // Também agenda um reinício usando AlarmManager como backup
+                    scheduleRestart()
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "Erro ao tentar reiniciar serviço: ${e.message}", e)
+                // Mesmo em caso de erro, tenta agendar reinício
+                scheduleRestart()
             }
+        }
+    }
+    
+    /**
+     * Agenda um reinício do serviço usando AlarmManager
+     * Isso garante que o serviço seja reiniciado mesmo se o app estiver completamente fechado
+     */
+    private fun scheduleRestart() {
+        try {
+            val alarmManager = getSystemService(android.content.Context.ALARM_SERVICE) as android.app.AlarmManager
+            val restartIntent = Intent(this, KioskModeService::class.java)
+            val pendingIntentFlags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            } else {
+                PendingIntent.FLAG_UPDATE_CURRENT
+            }
+            val pendingIntent = PendingIntent.getService(
+                this,
+                0,
+                restartIntent,
+                pendingIntentFlags
+            )
+            
+            // Agenda reinício em 5 segundos
+            val triggerTime = System.currentTimeMillis() + 5000
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                alarmManager.setExactAndAllowWhileIdle(
+                    android.app.AlarmManager.RTC_WAKEUP,
+                    triggerTime,
+                    pendingIntent
+                )
+            } else {
+                @Suppress("DEPRECATION")
+                alarmManager.setExact(android.app.AlarmManager.RTC_WAKEUP, triggerTime, pendingIntent)
+            }
+            
+            Log.d(TAG, "⏰ Reinício do serviço agendado em 5 segundos")
+        } catch (e: Exception) {
+            Log.e(TAG, "Erro ao agendar reinício: ${e.message}", e)
         }
     }
     
